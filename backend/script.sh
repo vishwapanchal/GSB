@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🚀 Updating Project Routes (Added Village Filter)..."
+echo "🚀 Fixing Project Image Upload (Removing 'await' & fixing args)..."
 
 cat <<'EOF' > app/routers/projects.py
 from fastapi import APIRouter, HTTPException, status, Query, UploadFile, File, Form, Body
@@ -31,8 +31,8 @@ class ProjectCreate(BaseModel):
     project_name: str
     description: str
     category: str
-    village_name: str  # <--- ADDED: To link project to a village
-    location: str      # Specific site (e.g. "North Road Junction")
+    village_name: str
+    location: str
     start_point: GeoPoint
     end_point: GeoPoint
     contractor_name: str
@@ -49,18 +49,13 @@ class ProjectUpdateStatus(BaseModel):
 
 # --- ROUTES ---
 
-# 1. CREATE PROJECT (Govt Official)
+# 1. CREATE PROJECT
 @router.post("/create", status_code=status.HTTP_201_CREATED)
 async def create_project(project: ProjectCreate):
-    """
-    Creates a new project. 
-    Requires 'village_name' to allow filtering later.
-    """
     new_project = project.dict()
     new_project["created_at"] = datetime.now(IST)
     new_project["images"] = []
     
-    # Insert into DB
     result = await db.projects.insert_one(new_project)
     
     return {
@@ -68,12 +63,9 @@ async def create_project(project: ProjectCreate):
         "project_id": str(result.inserted_id)
     }
 
-# 2. GET PROJECTS BY VILLAGE (New Route)
+# 2. GET PROJECTS BY VILLAGE
 @router.get("/village/{village_name}")
 async def get_projects_by_village(village_name: str):
-    """
-    Fetches ALL projects for a specific village.
-    """
     projects = await db.projects.find({"village_name": village_name}).to_list(100)
     
     results = []
@@ -87,9 +79,6 @@ async def get_projects_by_village(village_name: str):
 # 3. GET PROJECTS FOR CONTRACTOR
 @router.get("/contractor/{contractor_id}")
 async def get_contractor_projects(contractor_id: str):
-    """
-    Returns projects assigned to a specific contractor.
-    """
     projects = await db.projects.find({"contractor_id": contractor_id}).to_list(100)
     
     results = []
@@ -100,7 +89,7 @@ async def get_contractor_projects(contractor_id: str):
         
     return results
 
-# 4. UPLOAD PROJECT IMAGE (Contractor)
+# 4. UPLOAD PROJECT IMAGE (FIXED)
 @router.post("/{project_id}/upload-image")
 async def upload_project_image(
     project_id: str,
@@ -123,7 +112,14 @@ async def upload_project_image(
     if project.get("contractor_id") != contractor_id:
         raise HTTPException(status_code=403, detail="Unauthorized: You are not the assigned contractor.")
 
-    image_url = upload_file_to_s3(file.file, file.filename, folder="projects")
+    # --- FIX START ---
+    # 1. Removed 'await' (upload_file_to_s3 is synchronous)
+    # 2. Corrected arguments: file.file, file.filename
+    try:
+        image_url = upload_file_to_s3(file.file, file.filename, folder="projects")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"S3 Upload Failed: {str(e)}")
+    # --- FIX END ---
     
     image_record = {
         "url": image_url,
@@ -139,12 +135,9 @@ async def upload_project_image(
 
     return {"message": "Image uploaded successfully", "url": image_url}
 
-# 5. GET PROJECT DETAILS (Full View)
+# 5. GET PROJECT DETAILS
 @router.get("/{project_id}")
 async def get_project_details(project_id: str):
-    """
-    Get full details including images and milestones.
-    """
     try:
         oid = ObjectId(project_id)
     except:
@@ -162,9 +155,6 @@ async def get_project_details(project_id: str):
 # 6. UPDATE PROJECT STATUS
 @router.patch("/{project_id}/status")
 async def update_project_status(project_id: str, update: ProjectUpdateStatus):
-    """
-    Update status (e.g., 'In Progress', 'Completed').
-    """
     try:
         oid = ObjectId(project_id)
     except:
@@ -182,5 +172,7 @@ async def update_project_status(project_id: str, update: ProjectUpdateStatus):
 EOF
 
 echo "---------------------------------------------------"
-echo "✅ Added 'village_name' field & '/projects/village/{name}' route!"
+echo "✅ Fixed 'upload_project_image' crash!"
+echo "---------------------------------------------------"
+echo "👉 Restart server: uvicorn app.main:app --reload"
 echo "---------------------------------------------------"
